@@ -571,7 +571,7 @@ public abstract class SettableBeanProperty
      * Method that takes in exception of any type, and casts or wraps it
      * to an IOException or its subclass.
      */
-    protected void _throwAsIOE(JsonParser p, Exception e, Object value) throws IOException
+    protected void _throwAsIOE(JsonParser p, Throwable e, Object value) throws IOException
     {
         if (e instanceof IllegalArgumentException) {
             String actType = ClassUtil.classNameOf(value);
@@ -593,7 +593,7 @@ public abstract class SettableBeanProperty
         _throwAsIOE(p, e);
     }
 
-    protected IOException _throwAsIOE(JsonParser p, Exception e) throws IOException
+    protected IOException _throwAsIOE(JsonParser p, Throwable e) throws IOException
     {
         ClassUtil.throwIfIOE(e);
         ClassUtil.throwIfRTE(e);
@@ -604,7 +604,7 @@ public abstract class SettableBeanProperty
 
     // 10-Oct-2015, tatu: _Should_ be deprecated, too, but its remaining
     //   callers cannot actually provide a JsonParser
-    protected void _throwAsIOE(Exception e, Object value) throws IOException {
+    protected void _throwAsIOE(Throwable e, Object value) throws IOException {
         _throwAsIOE((JsonParser) null, e, value);
     }
 

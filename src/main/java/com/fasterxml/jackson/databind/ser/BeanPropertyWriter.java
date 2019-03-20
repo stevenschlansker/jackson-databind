@@ -1,6 +1,9 @@
 package com.fasterxml.jackson.databind.ser;
 
 import java.lang.annotation.Annotation;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
@@ -118,15 +121,7 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
      * <p>
      * `transient` (and non-final) only to support JDK serializability.
      */
-    protected transient Method _accessorMethod;
-
-    /**
-     * Field that contains the property value for field-accessible properties.
-     * Null if and only if {@link #_accessorMethod} is null.
-     * <p>
-     * `transient` (and non-final) only to support JDK serializability.
-     */
-    protected transient Field _field;
+    protected transient MethodHandle _accessor;
 
     /*
     /***********************************************************
@@ -227,17 +222,20 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
         _typeSerializer = typeSer;
         _cfgSerializationType = serType;
 
-        if (member instanceof AnnotatedField) {
-            _accessorMethod = null;
-            _field = (Field) member.getMember();
-        } else if (member instanceof AnnotatedMethod) {
-            _accessorMethod = (Method) member.getMember();
-            _field = null;
-        } else {
-            // 01-Dec-2014, tatu: Used to be illegal, but now explicitly allowed
-            // for virtual props
-            _accessorMethod = null;
-            _field = null;
+        try {
+            if (member instanceof AnnotatedField) {
+                ClassUtil.checkAndFixAccess(member.getMember(), false);
+                _accessor = MethodHandles.lookup().unreflectGetter((Field) member.getMember()).asType(MethodType.methodType(Object.class, Object.class));
+            } else if (member instanceof AnnotatedMethod) {
+                ClassUtil.checkAndFixAccess(member.getMember(), false);
+                _accessor = MethodHandles.lookup().unreflect((Method) member.getMember()).asType(MethodType.methodType(Object.class, Object.class));
+            } else {
+                // 01-Dec-2014, tatu: Used to be illegal, but now explicitly allowed
+                // for virtual props
+                _accessor = null;
+            }
+        } catch (ReflectiveOperationException e) {
+            throw sneakyThrow(e);
         }
         _suppressNulls = suppressNulls;
         _suppressableValue = suppressableValue;
@@ -281,8 +279,7 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
         _typeSerializer = null;
         _cfgSerializationType = null;
 
-        _accessorMethod = null;
-        _field = null;
+        _accessor = null;
         _suppressNulls = false;
         _suppressableValue = null;
 
@@ -314,8 +311,7 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
         _declaredType = base._declaredType;
 
         _member = base._member;
-        _accessorMethod = base._accessorMethod;
-        _field = base._field;
+        _accessor = base._accessor;
 
         _serializer = base._serializer;
         _nullSerializer = base._nullSerializer;
@@ -341,8 +337,7 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
         _member = base._member;
         _contextAnnotations = base._contextAnnotations;
         _declaredType = base._declaredType;
-        _accessorMethod = base._accessorMethod;
-        _field = base._field;
+        _accessor = base._accessor;
         _serializer = base._serializer;
         _nullSerializer = base._nullSerializer;
         if (base._internalSettings != null) {
@@ -451,17 +446,19 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
      * to just change Field/Method value directly.
      */
     Object readResolve() {
-        if (_member instanceof AnnotatedField) {
-            _accessorMethod = null;
-            _field = (Field) _member.getMember();
-        } else if (_member instanceof AnnotatedMethod) {
-            _accessorMethod = (Method) _member.getMember();
-            _field = null;
+        try {
+            if (_member instanceof AnnotatedField) {
+                _accessor = MethodHandles.lookup().unreflectGetter((Field) _member.getMember());
+            } else if (_member instanceof AnnotatedMethod) {
+                _accessor = MethodHandles.lookup().unreflect((Method) _member.getMember());
+            }
+            if (_serializer == null) {
+                _dynamicSerializers = PropertySerializerMap.emptyForProperties();
+            }
+            return this;
+        } catch (ReflectiveOperationException e) {
+            throw sneakyThrow(e);
         }
-        if (_serializer == null) {
-            _dynamicSerializers = PropertySerializerMap.emptyForProperties();
-        }
-        return this;
     }
 
     /*
@@ -684,8 +681,12 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
     public void serializeAsField(Object bean, JsonGenerator gen,
             SerializerProvider prov) throws Exception {
         // inlined 'get()'
-        final Object value = (_accessorMethod == null) ? _field.get(bean)
-                : _accessorMethod.invoke(bean, (Object[]) null);
+        final Object value;
+        try {
+            value = _accessor.invokeExact(bean);
+        } catch (Throwable e) {
+            throw sneakyThrow(e);
+        }
 
         // Null handling is bit different, check that first
         if (value == null) {
@@ -756,8 +757,12 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
     public void serializeAsElement(Object bean, JsonGenerator gen,
             SerializerProvider prov) throws Exception {
         // inlined 'get()'
-        final Object value = (_accessorMethod == null) ? _field.get(bean)
-                : _accessorMethod.invoke(bean, (Object[]) null);
+        final Object value;
+        try {
+            value = _accessor.invokeExact(bean);
+        } catch (Throwable e) {
+            throw sneakyThrow(e);
+        }
         if (value == null) { // nulls need specialized handling
             if (_nullSerializer != null) {
                 _nullSerializer.serialize(null, gen, prov);
@@ -912,8 +917,11 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
      * change the behavior
      */
     public final Object get(Object bean) throws Exception {
-        return (_accessorMethod == null) ? _field.get(bean) : _accessorMethod
-                .invoke(bean, (Object[]) null);
+        try {
+            return _accessor.invokeExact(bean);
+        } catch (Throwable e) {
+            throw sneakyThrow(e);
+        }
     }
 
     /**
@@ -951,13 +959,9 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
     public String toString() {
         StringBuilder sb = new StringBuilder(40);
         sb.append("property '").append(getName()).append("' (");
-        if (_accessorMethod != null) {
-            sb.append("via method ")
-                    .append(_accessorMethod.getDeclaringClass().getName())
-                    .append("#").append(_accessorMethod.getName());
-        } else if (_field != null) {
-            sb.append("field \"").append(_field.getDeclaringClass().getName())
-                    .append("#").append(_field.getName());
+        if (_accessor != null) {
+            sb.append("via methodhandle ")
+                    .append(_accessor);
         } else {
             sb.append("virtual");
         }
@@ -969,5 +973,10 @@ public class BeanPropertyWriter extends PropertyWriter // which extends
         }
         sb.append(')');
         return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Throwable> RuntimeException sneakyThrow(Throwable throwable) throws E {
+        throw (E) throwable;
     }
 }

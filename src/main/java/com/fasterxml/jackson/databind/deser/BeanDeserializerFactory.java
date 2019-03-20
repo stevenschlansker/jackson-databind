@@ -1,5 +1,6 @@
 package com.fasterxml.jackson.databind.deser;
 
+import java.lang.invoke.MethodHandles;
 import java.util.*;
 
 import com.fasterxml.jackson.annotation.*;
@@ -794,13 +795,20 @@ name, ((AnnotatedParameter) m).getIndex());
         // Does the Method specify the deserializer to use? If so, let's use it.
         TypeDeserializer typeDeser = type.getTypeHandler();
         SettableBeanProperty prop;
-        if (mutator instanceof AnnotatedMethod) {
-            prop = new MethodProperty(propDef, type, typeDeser,
-                    beanDesc.getClassAnnotations(), (AnnotatedMethod) mutator);
-        } else {
-            // 08-Sep-2016, tatu: wonder if we should verify it is `AnnotatedField` to be safe?
-            prop = new FieldProperty(propDef, type, typeDeser,
-                    beanDesc.getClassAnnotations(), (AnnotatedField) mutator);
+        try {
+            ClassUtil.checkAndFixAccess(mutator.getMember(), ctxt.getConfig().isEnabled(MapperFeature.OVERRIDE_PUBLIC_ACCESS_MODIFIERS));
+            if (mutator instanceof AnnotatedMethod) {
+                AnnotatedMethod am = (AnnotatedMethod) mutator;
+                prop = new MethodProperty(propDef, type, typeDeser,
+                        beanDesc.getClassAnnotations(), am, MethodHandles.lookup().unreflect(am.getAnnotated()));
+            } else {
+                AnnotatedField af = (AnnotatedField) mutator;
+                // 08-Sep-2016, tatu: wonder if we should verify it is `AnnotatedField` to be safe?
+                prop = new MethodProperty(propDef, type, typeDeser,
+                        beanDesc.getClassAnnotations(), af, MethodHandles.lookup().unreflectSetter(af.getAnnotated()));
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
         }
         JsonDeserializer<?> deser = findDeserializerFromAnnotation(ctxt, mutator);
         if (deser == null) {

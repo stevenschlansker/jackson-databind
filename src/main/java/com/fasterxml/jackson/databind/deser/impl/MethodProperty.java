@@ -2,6 +2,9 @@ package com.fasterxml.jackson.databind.deser.impl;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 
 import com.fasterxml.jackson.core.JsonParser;
@@ -22,26 +25,28 @@ public final class MethodProperty
 {
     private static final long serialVersionUID = 1;
 
-    protected final AnnotatedMethod _annotated;
-    
+    protected final AnnotatedMember _annotated;
+
     /**
      * Setter method for modifying property value; used for
      * "regular" method-accessible properties.
      */
-    protected final transient Method _setter;
+    protected final transient MethodHandle _setter;
+    protected final transient MethodHandle _setterReturn;
 
     /**
      * @since 2.9
      */
     final protected boolean _skipNulls;
-    
+
     public MethodProperty(BeanPropertyDefinition propDef,
             JavaType type, TypeDeserializer typeDeser,
-            Annotations contextAnnotations, AnnotatedMethod method)
+            Annotations contextAnnotations, AnnotatedMember annotated, MethodHandle setter)
     {
         super(propDef, type, typeDeser, contextAnnotations);
-        _annotated = method;
-        _setter = method.getAnnotated();
+        _annotated = annotated;
+        _setter = setter.asType(MethodType.methodType(void.class, Object.class, Object.class));
+        _setterReturn = setter.asType(MethodType.methodType(Object.class, Object.class, Object.class));
         _skipNulls = NullsConstantProvider.isSkipper(_nullProvider);
     }
 
@@ -50,6 +55,7 @@ public final class MethodProperty
         super(src, deser, nva);
         _annotated = src._annotated;
         _setter = src._setter;
+        _setterReturn = src._setterReturn;
         _skipNulls = NullsConstantProvider.isSkipper(nva);
     }
 
@@ -57,16 +63,18 @@ public final class MethodProperty
         super(src, newName);
         _annotated = src._annotated;
         _setter = src._setter;
+        _setterReturn = src._setterReturn;
         _skipNulls = src._skipNulls;
     }
 
     /**
      * Constructor used for JDK Serialization when reading persisted object
      */
-    protected MethodProperty(MethodProperty src, Method m) {
+    protected MethodProperty(MethodProperty src, MethodHandle m) {
         super(src);
         _annotated = src._annotated;
         _setter = m;
+        _setterReturn = src._setterReturn;
         _skipNulls = src._skipNulls;
     }
 
@@ -136,8 +144,8 @@ public final class MethodProperty
             value = _valueDeserializer.deserializeWithType(p, ctxt, _valueTypeDeserializer);
         }
         try {
-            _setter.invoke(instance, value);
-        } catch (Exception e) {
+            _setter.invokeExact(instance, value);
+        } catch (Throwable e) {
             _throwAsIOE(p, e, value);
         }
     }
@@ -165,9 +173,9 @@ public final class MethodProperty
             value = _valueDeserializer.deserializeWithType(p, ctxt, _valueTypeDeserializer);
         }
         try {
-            Object result = _setter.invoke(instance, value);
+            Object result = _setterReturn.invokeExact(instance, value);
             return (result == null) ? instance : result;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             _throwAsIOE(p, e, value);
             return null;
         }
@@ -177,8 +185,8 @@ public final class MethodProperty
     public final void set(Object instance, Object value) throws IOException
     {
         try {
-            _setter.invoke(instance, value);
-        } catch (Exception e) {
+            _setter.invokeExact(instance, value);
+        } catch (Throwable e) {
             // 15-Sep-2015, tatu: How could we get a ref to JsonParser?
             _throwAsIOE(e, value);
         }
@@ -188,9 +196,9 @@ public final class MethodProperty
     public Object setAndReturn(Object instance, Object value) throws IOException
     {
         try {
-            Object result = _setter.invoke(instance, value);
+            Object result = _setterReturn.invokeExact(instance, value);
             return (result == null) ? instance : result;
-        } catch (Exception e) {
+        } catch (Throwable e) {
             // 15-Sep-2015, tatu: How could we get a ref to JsonParser?
             _throwAsIOE(e, value);
             return null;
@@ -204,6 +212,14 @@ public final class MethodProperty
      */
 
     Object readResolve() {
-        return new MethodProperty(this, _annotated.getAnnotated());
+        try {
+            if (_annotated instanceof AnnotatedMethod) {
+                return new MethodProperty(this, MethodHandles.lookup().unreflect(((AnnotatedMethod) _annotated).getAnnotated()));
+            } else {
+                return new MethodProperty(this, MethodHandles.lookup().unreflectGetter(((AnnotatedField) _annotated).getAnnotated()));
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
     }
 }
